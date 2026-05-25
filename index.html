@@ -3,8 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover">
-    <title>Cell Tower AR Viewer – Smooth GPS</title>
-    <!-- Tailwind CSS v4 Play CDN -->
+    <title>Cell Tower AR – Stable Markers</title>
     <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
     <style>
         #bottom-sheet {
@@ -40,9 +39,7 @@
         <div class="max-w-md bg-slate-900 rounded-2xl p-8 shadow-2xl border border-red-500/40">
             <div class="text-5xl mb-4">🔒</div>
             <h1 class="text-xl font-bold mb-3 text-red-400">Secure Context Required</h1>
-            <p class="text-sm text-slate-300 mb-6 leading-relaxed">
-                This AR app requires a <strong>secure HTTPS connection</strong>. Please use <code class="text-indigo-300 bg-slate-800 px-1.5 py-0.5 rounded text-xs">localhost</code> or HTTPS.
-            </p>
+            <p class="text-sm text-slate-300 mb-6">This AR app requires a <strong>secure HTTPS connection</strong>. Use <code class="text-indigo-300 bg-slate-800 px-1.5 py-0.5 rounded text-xs">localhost</code> or HTTPS.</p>
             <div class="bg-slate-800 rounded-lg p-3 text-xs text-slate-400">
                 <span class="font-semibold text-yellow-400">Status:</span>
                 <span id="https-status-text" class="font-mono">Checking...</span>
@@ -55,7 +52,7 @@
         <div class="flex flex-col items-center gap-6 text-center px-8">
             <div class="text-6xl">📡</div>
             <h1 class="text-2xl font-bold text-white">Cell Tower AR</h1>
-            <p class="text-slate-400 text-sm max-w-xs">See cell towers around you in AR. Smooth, stable markers.</p>
+            <p class="text-slate-400 text-sm max-w-xs">Stable AR markers with rotation smoothing.</p>
             <button id="start-ar-btn" class="bg-indigo-600 hover:bg-indigo-500 active:bg-indigo-700 text-white font-bold py-4 px-8 rounded-2xl text-lg shadow-xl shadow-indigo-600/30 transition-all transform active:scale-95 cursor-pointer">
                 📷 Launch AR Experience
             </button>
@@ -66,12 +63,12 @@
     <!-- AR Scene Container -->
     <div id="ar-scene-container"></div>
 
-    <!-- HUD Overlay -->
+    <!-- HUD -->
     <div id="hud-overlay" class="fixed top-0 left-0 right-0 z-[100] p-3 pointer-events-none flex flex-col gap-2">
         <div class="pointer-events-auto self-start bg-slate-900/80 backdrop-blur-xl rounded-2xl px-4 py-3 text-white shadow-lg border border-white/10 max-w-[260px]">
             <div class="flex items-center gap-2 mb-2">
                 <span class="w-2.5 h-2.5 rounded-full bg-green-400 animate-pulse shadow-[0_0_8px_rgba(74,222,128,0.6)]"></span>
-                <span class="text-xs font-semibold text-green-300 tracking-wide">GPS SMOOTH</span>
+                <span class="text-xs font-semibold text-green-300 tracking-wide">SMOOTH GPS</span>
             </div>
             <div class="text-xs text-slate-300 space-y-1">
                 <div class="flex justify-between"><span class="text-slate-400">Lat:</span><span id="hud-lat" class="font-mono text-white font-semibold">--</span></div>
@@ -84,7 +81,8 @@
         </div>
     </div>
 
-    <!-- FAB & Bottom Sheet (unchanged structure) -->
+    <!-- FAB & Bottom Sheet (unchanged, omitted for brevity but included in full code) -->
+    <!-- The full FAB and sheet HTML is identical to previous version, I'll include it completely below -->
     <button id="toggle-fab" class="fixed z-[200] bottom-6 right-4 w-14 h-14 rounded-full bg-indigo-600 text-white shadow-2xl flex items-center justify-center text-2xl border-2 border-indigo-300/40 active:scale-95 transition-transform duration-150 no-select cursor-pointer">
         <span id="fab-icon" class="leading-none">＋</span>
     </button>
@@ -147,8 +145,45 @@
     <script src="https://raw.githack.com/AR-js-org/AR.js/master/aframe/build/aframe-ar.js"></script>
 
     <script>
+        // ==================== CUSTOM ROTATION SMOOTHING COMPONENT ====================
+        AFRAME.registerComponent('smooth-rotation', {
+            schema: {
+                smoothFactor: { type: 'number', default: 0.05 }   // lower = smoother
+            },
+            init: function () {
+                this.targetRotation = new THREE.Euler(0, 0, 0, 'YXZ');
+                this.currentRotation = new THREE.Euler(0, 0, 0, 'YXZ');
+                this.bindMethods();
+                window.addEventListener('deviceorientation', this.onDeviceOrientation, true);
+            },
+            bindMethods: function () {
+                this.onDeviceOrientation = this.onDeviceOrientation.bind(this);
+            },
+            onDeviceOrientation: function (event) {
+                if (event.alpha !== null) {
+                    this.targetRotation.set(
+                        THREE.MathUtils.degToRad(event.beta  || 0),
+                        THREE.MathUtils.degToRad(event.alpha || 0),
+                        -THREE.MathUtils.degToRad(event.gamma || 0)
+                    );
+                }
+            },
+            tick: function () {
+                // Exponential moving average (lerp)
+                this.currentRotation.x += this.data.smoothFactor * (this.targetRotation.x - this.currentRotation.x);
+                this.currentRotation.y += this.data.smoothFactor * (this.targetRotation.y - this.currentRotation.y);
+                this.currentRotation.z += this.data.smoothFactor * (this.targetRotation.z - this.currentRotation.z);
+                // Apply to camera object3D
+                const obj = this.el.object3D;
+                obj.rotation.copy(this.currentRotation);
+            },
+            remove: function () {
+                window.removeEventListener('deviceorientation', this.onDeviceOrientation, true);
+            }
+        });
+
+        // ==================== MAIN APPLICATION ====================
         (function() {
-            // DOM refs
             const $ = (sel) => document.querySelector(sel);
             const launchOverlay = $('#launch-overlay');
             const startARBtn = $('#start-ar-btn');
@@ -175,7 +210,6 @@
             const towerLatInput = $('#tower-lat');
             const towerLngInput = $('#tower-lng');
 
-            // State
             const STORAGE_KEY = 'ar_cell_towers_custom';
             const defaultTowers = [
                 { id: 'default-0', name: 'Dialog Tower Colombo', provider: 'Dialog', lat: 6.9271, lng: 79.8612 },
@@ -187,14 +221,13 @@
             let customTowers = [];
             let allTowers = [];
             let towerEntityRefs = {};
-            // Smoothed GPS
             let smoothLat = null, smoothLng = null;
             let userLat = null, userLng = null, userAccuracy = null;
             let gpsWatchId = null;
             let isSheetVisible = false;
             let arScene = null;
             let toastTimer = null;
-            const GPS_SMOOTH_FACTOR = 0.15; // Lower = smoother
+            const GPS_SMOOTH_FACTOR = 0.05; // very smooth position updates
 
             function getProviderColor(provider) {
                 const map = { 'Dialog': '#00BCD4', 'Mobitel': '#2196F3', 'Hutch': '#FF9800' };
@@ -217,7 +250,6 @@
                 return tower.name+'\n'+tower.provider+' | '+formatDistance(distKm);
             }
 
-            // LocalStorage
             function loadCustomTowers() {
                 try {
                     const raw = localStorage.getItem(STORAGE_KEY);
@@ -229,16 +261,13 @@
                 } catch(e) { customTowers = []; }
                 customTowers.forEach((t,i)=>{ if(!t.id) t.id='custom-'+Date.now()+'-'+i; });
             }
-            function saveCustomTowers() {
-                try { localStorage.setItem(STORAGE_KEY, JSON.stringify(customTowers)); } catch(e) {}
-            }
+            function saveCustomTowers() { try { localStorage.setItem(STORAGE_KEY, JSON.stringify(customTowers)); } catch(e) {} }
             function mergeAllTowers() {
                 const seen = new Set();
                 allTowers = [];
                 [...defaultTowers, ...customTowers].forEach(t=>{ if(!seen.has(t.id)){ seen.add(t.id); allTowers.push(t); } });
             }
 
-            // AR entity management
             function clearAllTowerEntities() {
                 Object.values(towerEntityRefs).forEach(ref=>{ try{ if(ref.entity.parentNode) ref.entity.parentNode.removeChild(ref.entity); }catch(e){} });
                 towerEntityRefs = {};
@@ -294,7 +323,7 @@
             }
             function updateHUDTowerCount() { if(hudTowerCount) hudTowerCount.textContent = allTowers.length; }
 
-            // ========== SMOOTH GPS WITH MANUAL CAMERA UPDATE ==========
+            // ========== SMOOTH GPS (position only, no rotation) ==========
             function setupSmoothGPS() {
                 if (!navigator.geolocation) return;
                 gpsWatchId = navigator.geolocation.watchPosition(
@@ -302,22 +331,13 @@
                         const rawLat = pos.coords.latitude;
                         const rawLng = pos.coords.longitude;
                         userAccuracy = pos.coords.accuracy;
-
-                        // Initialize smooth values on first fix
-                        if (smoothLat === null) {
-                            smoothLat = rawLat;
-                            smoothLng = rawLng;
-                        } else {
-                            // Exponential moving average
+                        if (smoothLat === null) { smoothLat = rawLat; smoothLng = rawLng; }
+                        else {
                             smoothLat += GPS_SMOOTH_FACTOR * (rawLat - smoothLat);
                             smoothLng += GPS_SMOOTH_FACTOR * (rawLng - smoothLng);
                         }
-
-                        // Keep raw for reference
-                        userLat = rawLat;
-                        userLng = rawLng;
-
-                        // Update camera position (AR.js gps-camera)
+                        userLat = rawLat; userLng = rawLng;
+                        // Update the camera position via simulation
                         const cam = document.getElementById('gps-camera');
                         if (cam && cam.components['gps-camera']) {
                             cam.setAttribute('gps-camera', {
@@ -325,7 +345,6 @@
                                 simulateLongitude: smoothLng
                             });
                         }
-
                         updateGPSDisplay(smoothLat, smoothLng, userAccuracy);
                         updateAllDistances();
                     },
@@ -338,16 +357,9 @@
                 if (hudLat) hudLat.textContent = lat!==null ? lat.toFixed(6)+'°' : '--';
                 if (hudLng) hudLng.textContent = lng!==null ? lng.toFixed(6)+'°' : '--';
                 if (hudAccuracy) {
-                    if (typeof acc === 'number') {
-                        hudAccuracy.textContent = '±'+Math.round(acc)+'m';
-                        hudAccuracy.className = 'font-mono text-green-300 text-[10px]';
-                    } else if (typeof acc === 'string') {
-                        hudAccuracy.textContent = acc;
-                        hudAccuracy.className = 'font-mono text-red-300 text-[10px]';
-                    } else {
-                        hudAccuracy.textContent = '--';
-                        hudAccuracy.className = 'font-mono text-amber-300 text-[10px]';
-                    }
+                    if (typeof acc === 'number') { hudAccuracy.textContent = '±'+Math.round(acc)+'m'; hudAccuracy.className='font-mono text-green-300 text-[10px]'; }
+                    else if (typeof acc === 'string') { hudAccuracy.textContent=acc; hudAccuracy.className='font-mono text-red-300 text-[10px]'; }
+                    else { hudAccuracy.textContent='--'; hudAccuracy.className='font-mono text-amber-300 text-[10px]'; }
                 }
             }
 
@@ -375,9 +387,7 @@
                     towerLatInput.value = (smoothLat + offset).toFixed(7);
                     towerLngInput.value = (smoothLng + offset).toFixed(7);
                     showToast('📍 Location set (16m offset)', '#6366f1');
-                } else {
-                    showToast('⚠️ GPS not ready', '#f59e0b');
-                }
+                } else showToast('⚠️ GPS not ready', '#f59e0b');
             }
 
             function handleAddTower() {
@@ -431,7 +441,6 @@
             }
             function escapeHTML(str) { const div=document.createElement('div'); div.textContent=str; return div.innerHTML; }
 
-            // Event listeners
             toggleFab.addEventListener('click', toggleSheet);
             closeSheetBtn.addEventListener('click', hideSheet);
             sheetBackdrop.addEventListener('click', hideSheet);
@@ -441,7 +450,6 @@
             document.addEventListener('keydown', e=>{ if(e.key==='Escape' && isSheetVisible) hideSheet(); });
             bottomSheet.addEventListener('click', e=>e.stopPropagation());
 
-            // Launch AR
             function startARExperience() {
                 launchOverlay.classList.add('hidden');
                 arSceneContainer.classList.add('active');
@@ -451,23 +459,25 @@
                         vr-mode-ui="enabled: false"
                         arjs="sourceType: webcam; debugUIEnabled: false; videoTexture: true; maxDistance: 10000;"
                         renderer="logarithmicDepthBuffer: true; antialias: true; alpha: false;">
-                        <a-camera id="gps-camera" gps-camera rotation-reader position="0 0 0"></a-camera>
+                        <a-camera id="gps-camera"
+                            gps-camera="gpsMinDistance: 100000;"
+                            smooth-rotation="smoothFactor: 0.03"
+                            position="0 0 0">
+                        </a-camera>
                     </a-scene>
                 `;
                 arScene = document.getElementById('ar-scene');
                 arScene.addEventListener('loaded', ()=>{
-                    console.log('AR scene loaded – starting smooth GPS');
+                    console.log('AR scene loaded – smooth GPS & rotation active');
                     setupSmoothGPS();
                     setTimeout(()=>{ renderAllTowers(); }, 1500);
                 });
-                setTimeout(()=>{ if(!arScene.hasLoaded) console.warn('Scene load timeout'); }, 12000);
             }
 
             function checkSecureContext() {
                 if (!window.isSecureContext) {
                     httpsWarning.classList.remove('hidden');
                     httpsStatusText.textContent = '❌ Not Secure (HTTP)';
-                    httpsStatusText.className = 'font-mono text-red-400';
                     launchOverlay.classList.add('hidden');
                     return false;
                 }
@@ -485,7 +495,7 @@
             if (document.readyState==='loading') document.addEventListener('DOMContentLoaded', init);
             else init();
 
-            console.log('%c📡 Smooth AR Tower App ready.','color:#818cf8; font-weight:bold;');
+            console.log('📡 Stable AR Tower App ready.');
         })();
     </script>
 </body>
