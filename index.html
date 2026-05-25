@@ -1,0 +1,972 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <title>Cell Tower AR Viewer</title>
+    <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+    <style>
+        /* Custom animations for bottom sheet */
+        #bottom-sheet {
+            transform: translateY(100%);
+            transition: transform 0.35s cubic-bezier(0.4, 0, 0.2, 1);
+            will-change: transform;
+        }
+        #bottom-sheet.visible {
+            transform: translateY(0);
+        }
+        #sheet-backdrop {
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity 0.3s ease;
+            will-change: opacity;
+        }
+        #sheet-backdrop.visible {
+            opacity: 1;
+            pointer-events: auto;
+        }
+        /* Custom scrollbar for bottom sheet */
+        #sheet-content::-webkit-scrollbar {
+            width: 4px;
+        }
+        #sheet-content::-webkit-scrollbar-track {
+            background: transparent;
+        }
+        #sheet-content::-webkit-scrollbar-thumb {
+            background: rgba(255, 255, 255, 0.3);
+            border-radius: 2px;
+        }
+        /* Pulse animation for the FAB */
+        @keyframes subtle-pulse {
+            0%,
+            100% {
+                box-shadow: 0 4px 16px rgba(99, 102, 241, 0.4);
+            }
+            50% {
+                box-shadow: 0 4px 28px rgba(99, 102, 241, 0.7);
+            }
+        }
+        #toggle-fab {
+            animation: subtle-pulse 2.5s ease-in-out infinite;
+        }
+        /* Toast animation */
+        @keyframes slide-up-fade {
+            0% {
+                transform: translateY(20px);
+                opacity: 0;
+            }
+            15% {
+                transform: translateY(0);
+                opacity: 1;
+            }
+            75% {
+                transform: translateY(0);
+                opacity: 1;
+            }
+            100% {
+                transform: translateY(-10px);
+                opacity: 0;
+            }
+        }
+        .toast-show {
+            animation: slide-up-fade 2.2s ease forwards;
+        }
+        /* A-Frame scene container */
+        #ar-scene-container {
+            position: fixed;
+            inset: 0;
+            z-index: 0;
+            background: #000;
+        }
+        #ar-scene-container a-scene {
+            width: 100%;
+            height: 100%;
+            display: block;
+        }
+        /* Prevent text selection on UI */
+        .no-select {
+            -webkit-user-select: none;
+            user-select: none;
+            -webkit-touch-callout: none;
+        }
+        /* Input focus styles */
+        input:focus,
+        select:focus {
+            outline: 2px solid rgba(129, 140, 248, 0.7);
+            outline-offset: 2px;
+        }
+    </style>
+</head>
+<body class="m-0 p-0 overflow-hidden bg-black font-sans antialiased">
+
+    <!-- ==================== HTTPS WARNING OVERLAY ==================== -->
+    <div id="https-warning"
+    class="fixed inset-0 z-[9999] flex flex-col items-center justify-center bg-slate-950 text-white text-center px-6 hidden">
+    <div class="max-w-md bg-slate-900 rounded-2xl p-8 shadow-2xl border border-red-500/40">
+        <div class="text-5xl mb-4">🔒</div>
+        <h1 class="text-xl font-bold mb-3 text-red-400">Secure Context Required</h1>
+        <p class="text-sm text-slate-300 mb-6 leading-relaxed">
+            This AR app requires a <strong>secure HTTPS connection</strong> to access your device's
+            camera and GPS sensors. Please open this page over HTTPS or use <code
+        class="text-indigo-300 bg-slate-800 px-1.5 py-0.5 rounded text-xs">localhost</code> for development.
+    </p>
+    <div class="bg-slate-800 rounded-lg p-3 text-xs text-slate-400">
+        <span class="block mb-1 font-semibold text-yellow-400">Current Status:</span>
+        <span id="https-status-text" class="font-mono">Checking...</span>
+    </div>
+</div>
+</div>
+
+<!-- ==================== AR SCENE CONTAINER ==================== -->
+<div id="ar-scene-container">
+    <a-scene id="ar-scene"
+    embedded
+    vr-mode-ui="enabled: false"
+    arjs="sourceType: webcam; debugUIEnabled: false; videoTexture: true;"
+    renderer="logarithmicDepthBuffer: true; antialias: true; alpha: false;"
+    loading-screen="dotsColor: #818cf8; backgroundColor: #0f172a;">
+    <a-camera id="gps-camera" gps-camera rotation-reader position="0 0 0"></a-camera>
+</a-scene>
+</div>
+
+<!-- ==================== LOADING OVERLAY ==================== -->
+<div id="loading-overlay"
+class="fixed inset-0 z-[8000] flex flex-col items-center justify-center bg-slate-950 transition-opacity duration-500">
+<div class="flex flex-col items-center gap-4">
+    <div class="w-12 h-12 border-4 border-indigo-400 border-t-transparent rounded-full animate-spin"></div>
+    <p class="text-indigo-300 text-sm font-medium tracking-wide">Initializing AR Engine...</p>
+    <p class="text-slate-500 text-xs">Please allow camera &amp; location access</p>
+</div>
+</div>
+
+<!-- ==================== HUD OVERLAY ==================== -->
+<div id="hud-overlay"
+class="fixed top-0 left-0 right-0 z-[100] p-3 pointer-events-none flex flex-col gap-2">
+<!-- GPS Info Card -->
+<div class="pointer-events-auto self-start bg-slate-900/75 backdrop-blur-xl rounded-2xl px-4 py-3 text-white shadow-lg border border-white/10 max-w-[280px]">
+    <div class="flex items-center gap-2 mb-2">
+        <span class="w-2.5 h-2.5 rounded-full bg-green-400 animate-pulse shadow-[0_0_8px_rgba(74,222,128,0.6)]"></span>
+        <span class="text-xs font-semibold text-green-300 tracking-wide">GPS LIVE</span>
+    </div>
+    <div class="text-xs text-slate-300 space-y-1">
+        <div class="flex justify-between gap-3">
+            <span class="text-slate-400">Lat:</span>
+            <span id="hud-lat" class="font-mono text-white font-semibold">--</span>
+        </div>
+        <div class="flex justify-between gap-3">
+            <span class="text-slate-400">Lng:</span>
+            <span id="hud-lng" class="font-mono text-white font-semibold">--</span>
+        </div>
+        <div class="flex justify-between gap-3 border-t border-white/10 pt-1 mt-1">
+            <span class="text-slate-400">Accuracy:</span>
+            <span id="hud-accuracy" class="font-mono text-amber-300 text-[10px]">--</span>
+        </div>
+    </div>
+</div>
+<!-- Tower Count Badge -->
+<div class="pointer-events-auto self-start bg-indigo-900/70 backdrop-blur-xl rounded-full px-3 py-1.5 text-white text-xs font-semibold shadow-lg border border-indigo-400/30">
+    <span>🗼 Towers: <span id="hud-tower-count">0</span></span>
+</div>
+</div>
+
+<!-- ==================== FLOATING ACTION BUTTON ==================== -->
+<button id="toggle-fab"
+class="fixed z-[200] bottom-6 right-4 w-14 h-14 rounded-full bg-indigo-600 text-white shadow-2xl flex items-center justify-center text-2xl border-2 border-indigo-300/40 active:scale-95 transition-transform duration-150 no-select cursor-pointer"
+aria-label="Toggle Add Tower Form"
+title="Add / Manage Towers">
+<span id="fab-icon" class="leading-none">＋</span>
+</button>
+
+<!-- ==================== TOAST NOTIFICATION ==================== -->
+<div id="toast"
+class="fixed z-[300] bottom-32 left-1/2 -translate-x-1/2 bg-emerald-600 text-white px-5 py-2.5 rounded-full text-sm font-semibold shadow-xl pointer-events-none opacity-0 no-select whitespace-nowrap">
+✅ Tower Added!
+</div>
+
+<!-- ==================== BOTTOM SHEET BACKDROP ==================== -->
+<div id="sheet-backdrop"
+class="fixed inset-0 z-[150] bg-black/50 backdrop-blur-sm"
+aria-hidden="true"></div>
+
+<!-- ==================== BOTTOM SHEET ==================== -->
+<div id="bottom-sheet"
+class="fixed z-[160] bottom-0 left-0 right-0 bg-slate-900/95 backdrop-blur-2xl rounded-t-[28px] shadow-[0_-8px_40px_rgba(0,0,0,0.5)] border border-white/10 border-b-0 max-h-[82vh] flex flex-col">
+<!-- Drag Handle -->
+<div class="flex-shrink-0 flex justify-center pt-3 pb-1">
+    <div class="w-10 h-1.5 bg-white/25 rounded-full"></div>
+</div>
+<!-- Sheet Header -->
+<div class="flex-shrink-0 flex items-center justify-between px-5 pb-2">
+    <h2 class="text-white text-lg font-bold tracking-tight">📡 Add Cell Tower</h2>
+    <button id="close-sheet-btn"
+    class="w-8 h-8 rounded-full bg-white/10 hover:bg-white/20 flex items-center justify-center text-white text-sm transition-colors cursor-pointer no-select"
+    aria-label="Close form">
+    ✕
+</button>
+</div>
+<!-- Sheet Scrollable Content -->
+<div id="sheet-content" class="flex-1 overflow-y-auto px-5 pb-8 space-y-4">
+    <!-- Tower Name -->
+    <div>
+        <label for="tower-name" class="block text-xs font-semibold text-indigo-300 mb-1.5 uppercase tracking-wider">Tower Name</label>
+        <input type="text" id="tower-name"
+        class="w-full bg-slate-800/80 border border-white/15 rounded-xl px-4 py-3 text-white text-sm placeholder-slate-500 focus:border-indigo-400 transition-colors"
+        placeholder="e.g. Lotus Tower Relay"
+        maxlength="40"
+        autocomplete="off">
+    </div>
+    <!-- Provider Dropdown -->
+    <div>
+        <label for="tower-provider" class="block text-xs font-semibold text-indigo-300 mb-1.5 uppercase tracking-wider">Provider</label>
+        <select id="tower-provider"
+        class="w-full bg-slate-800/80 border border-white/15 rounded-xl px-4 py-3 text-white text-sm appearance-none cursor-pointer focus:border-indigo-400 transition-colors"
+        style="background-image: url('data:image/svg+xml;utf8,<svg xmlns=%22http://www.w3.org/2000/svg%22 width=%2216%22 height=%2216%22 fill=%22%23a5b4fc%22 viewBox=%220 0 16 16%22><path d=%22M4.646 5.646a.5.5 0 0 1 .708 0L8 8.293l2.646-2.647a.5.5 0 0 1 .708.708l-3 3a.5.5 0 0 1-.708 0l-3-3a.5.5 0 0 1 0-.708z%22/></svg>'); background-repeat: no-repeat; background-position: right 12px center; padding-right: 40px;">
+        <option value="Dialog" class="bg-slate-800 text-white">Dialog</option>
+        <option value="Mobitel" class="bg-slate-800 text-white">Mobitel</option>
+        <option value="Hutch" class="bg-slate-800 text-white">Hutch</option>
+    </select>
+</div>
+<!-- Latitude -->
+<div>
+    <label for="tower-lat" class="block text-xs font-semibold text-indigo-300 mb-1.5 uppercase tracking-wider">Latitude</label>
+    <input type="number" id="tower-lat"
+    class="w-full bg-slate-800/80 border border-white/15 rounded-xl px-4 py-3 text-white text-sm placeholder-slate-500 focus:border-indigo-400 transition-colors font-mono"
+    placeholder="e.g. 6.9271"
+    step="any"
+    min="-90"
+    max="90"
+    autocomplete="off">
+</div>
+<!-- Longitude -->
+<div>
+    <label for="tower-lng" class="block text-xs font-semibold text-indigo-300 mb-1.5 uppercase tracking-wider">Longitude</label>
+    <input type="number" id="tower-lng"
+    class="w-full bg-slate-800/80 border border-white/15 rounded-xl px-4 py-3 text-white text-sm placeholder-slate-500 focus:border-indigo-400 transition-colors font-mono"
+    placeholder="e.g. 79.8612"
+    step="any"
+    min="-180"
+    max="180"
+    autocomplete="off">
+</div>
+<!-- Use Current Location Button -->
+<button id="use-current-location-btn"
+class="w-full bg-slate-700/70 hover:bg-slate-600/70 border border-white/15 rounded-xl px-4 py-2.5 text-indigo-200 text-sm font-medium transition-colors cursor-pointer flex items-center justify-center gap-2">
+<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="3"/><line x1="12" y1="2" x2="12" y2="6"/><line x1="12" y1="18" x2="12" y2="22"/><line x1="2" y1="12" x2="6" y2="12"/><line x1="18" y1="12" x2="22" y2="12"/></svg>
+Use My Current Location
+</button>
+<!-- Add Tower Button -->
+<button id="add-tower-btn"
+class="w-full bg-indigo-600 hover:bg-indigo-500 active:bg-indigo-700 text-white font-bold py-3.5 rounded-xl text-sm uppercase tracking-wider shadow-lg shadow-indigo-600/30 transition-all cursor-pointer flex items-center justify-center gap-2">
+<span id="add-btn-text">🗼 Add Tower to AR View</span>
+</button>
+<!-- Manage Towers Section -->
+<div class="border-t border-white/10 pt-4 mt-2">
+    <details class="group">
+        <summary class="text-xs font-semibold text-slate-400 uppercase tracking-wider cursor-pointer hover:text-slate-300 transition-colors list-none flex items-center justify-between">
+            📋 Manage Saved Towers
+            <span class="text-[10px] bg-slate-700 rounded-full px-2 py-0.5 text-slate-300" id="custom-tower-count">0 custom</span>
+        </summary>
+        <div class="mt-3 space-y-2 max-h-36 overflow-y-auto" id="saved-towers-list">
+            <p class="text-xs text-slate-500 italic">No custom towers saved yet.</p>
+        </div>
+        <button id="clear-all-custom-btn"
+        class="mt-3 w-full bg-red-800/50 hover:bg-red-700/60 border border-red-500/30 rounded-lg px-3 py-2 text-red-200 text-xs font-medium transition-colors cursor-pointer">
+        🗑 Clear All Custom Towers
+    </button>
+</details>
+</div>
+</div>
+</div>
+
+<!-- ==================== SCRIPTS ==================== -->
+<script src="https://aframe.io/releases/1.3.0/aframe.min.js">
+</script>
+<script src="https://raw.githack.com/AR-js-org/AR.js/master/aframe/build/aframe-ar-nft.js">
+</script>
+<script>
+    (function() {
+        // ==================== DOM ELEMENT REFERENCES ====================
+        const $ = (sel) => document.querySelector(sel);
+        const $$ = (sel) => document.querySelectorAll(sel);
+
+        const arScene = $('#ar-scene');
+        const loadingOverlay = $('#loading-overlay');
+        const httpsWarning = $('#https-warning');
+        const httpsStatusText = $('#https-status-text');
+        const bottomSheet = $('#bottom-sheet');
+        const sheetBackdrop = $('#sheet-backdrop');
+        const toggleFab = $('#toggle-fab');
+        const fabIcon = $('#fab-icon');
+        const closeSheetBtn = $('#close-sheet-btn');
+        const addTowerBtn = $('#add-tower-btn');
+        const addBtnText = $('#add-btn-text');
+        const toastEl = $('#toast');
+        const hudLat = $('#hud-lat');
+        const hudLng = $('#hud-lng');
+        const hudAccuracy = $('#hud-accuracy');
+        const hudTowerCount = $('#hud-tower-count');
+        const customTowerCountEl = $('#custom-tower-count');
+        const savedTowersList = $('#saved-towers-list');
+        const clearAllCustomBtn = $('#clear-all-custom-btn');
+        const useCurrentLocationBtn = $('#use-current-location-btn');
+        const towerNameInput = $('#tower-name');
+        const towerProviderInput = $('#tower-provider');
+        const towerLatInput = $('#tower-lat');
+        const towerLngInput = $('#tower-lng');
+
+        // ==================== STATE ====================
+        const STORAGE_KEY = 'ar_cell_towers_custom';
+        const defaultTowers = [{
+            id: 'default-0',
+            name: 'Dialog Tower Colombo',
+            provider: 'Dialog',
+            lat: 6.9271,
+            lng: 79.8612
+        }, {
+            id: 'default-1',
+            name: 'Mobitel HQ Tower',
+            provider: 'Mobitel',
+            lat: 6.9147,
+            lng: 79.8564
+        }, {
+            id: 'default-2',
+            name: 'Hutch Tower Maradana',
+            provider: 'Hutch',
+            lat: 6.9016,
+            lng: 79.8609
+        }, {
+            id: 'default-3',
+            name: 'Dialog Kandy Tower',
+            provider: 'Dialog',
+            lat: 7.2906,
+            lng: 80.6337
+        }, {
+            id: 'default-4',
+            name: 'Mobitel Galle Tower',
+            provider: 'Mobitel',
+            lat: 6.0535,
+            lng: 80.2210
+        }];
+
+        let customTowers = [];
+        let allTowers = [];
+        let towerEntityRefs = {}; // Map<id, { entity, textEl, tower }>
+        let userLat = null;
+        let userLng = null;
+        let userAccuracy = null;
+        let gpsWatchId = null;
+        let isSheetVisible = false;
+        let sceneReady = false;
+        let toastTimer = null;
+
+        // ==================== PROVIDER COLOR MAP ====================
+        function getProviderColor(provider) {
+            const map = {
+                'Dialog': '#00BCD4',
+                'Mobitel': '#2196F3',
+                'Hutch': '#FF9800'
+            };
+            return map[provider] || '#9C27B0';
+        }
+
+        // ==================== HAVERSINE DISTANCE ====================
+        function calculateDistance(lat1, lon1, lat2, lon2) {
+            const R = 6371; // Earth radius in km
+            const dLat = (lat2 - lat1) * Math.PI / 180;
+            const dLon = (lon2 - lon1) * Math.PI / 180;
+            const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+                Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+                Math.sin(dLon / 2) * Math.sin(dLon / 2);
+            const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+            return R * c;
+        }
+
+        function formatDistance(km) {
+            if (km === null || km === undefined || isNaN(km)) return 'Calculating...';
+            if (km < 0.01) return '< 10 m';
+            if (km < 1) return Math.round(km * 1000) + ' m';
+            return km.toFixed(1) + ' km';
+        }
+
+        function formatTowerText(tower, distanceKm) {
+            let distStr = formatDistance(distanceKm);
+            return tower.name + '\n' + tower.provider + ' | ' + distStr;
+        }
+
+        // ==================== LOCAL STORAGE ====================
+        function loadCustomTowers() {
+            try {
+                const raw = localStorage.getItem(STORAGE_KEY);
+                if (raw) {
+                    const parsed = JSON.parse(raw);
+                    if (Array.isArray(parsed)) {
+                        customTowers = parsed.filter(t =>
+                            t && typeof t.name === 'string' &&
+                            typeof t.provider === 'string' &&
+                            typeof t.lat === 'number' &&
+                            typeof t.lng === 'number' &&
+                            !isNaN(t.lat) && !isNaN(t.lng) &&
+                            t.lat >= -90 && t.lat <= 90 &&
+                            t.lng >= -180 && t.lng <= 180
+                        );
+                        // Ensure all custom towers have unique IDs
+                        customTowers.forEach((t, i) => {
+                            if (!t.id || typeof t.id !== 'string') {
+                                t.id = 'custom-' + Date.now() + '-' + i;
+                            }
+                        });
+                    } else {
+                        customTowers = [];
+                    }
+                } else {
+                    customTowers = [];
+                }
+            } catch (e) {
+                console.warn('Failed to load custom towers from localStorage:', e);
+                customTowers = [];
+            }
+        }
+
+        function saveCustomTowers() {
+            try {
+                localStorage.setItem(STORAGE_KEY, JSON.stringify(customTowers));
+            } catch (e) {
+                console.warn('Failed to save custom towers to localStorage:', e);
+                showToast('⚠️ Storage full!', '#ef4444');
+            }
+        }
+
+        function mergeAllTowers() {
+            // Combine defaults + custom, avoid duplicate IDs
+            const seen = new Set();
+            allTowers = [];
+            [...defaultTowers, ...customTowers].forEach(t => {
+                if (!seen.has(t.id)) {
+                    seen.add(t.id);
+                    allTowers.push(t);
+                }
+            });
+        }
+
+        // ==================== ENTITY MANAGEMENT ====================
+        function clearAllTowerEntities() {
+            Object.values(towerEntityRefs).forEach(ref => {
+                try {
+                    if (ref.entity && ref.entity.parentNode) {
+                        ref.entity.parentNode.removeChild(ref.entity);
+                    }
+                } catch (e) {
+                    console.warn('Error removing entity:', e);
+                }
+            });
+            towerEntityRefs = {};
+        }
+
+        function createTowerEntity(tower) {
+            const entity = document.createElement('a-entity');
+            entity.setAttribute('gps-entity-place',
+                'latitude: ' + tower.lat + '; longitude: ' + tower.lng + ';');
+            entity.setAttribute('data-tower-id', tower.id);
+
+            // Sphere marker
+            const sphere = document.createElement('a-sphere');
+            sphere.setAttribute('radius', '1.8');
+            sphere.setAttribute('color', getProviderColor(tower.provider));
+            sphere.setAttribute('position', '0 0.5 0');
+            sphere.setAttribute('material', 'shader: standard; emissive: ' + getProviderColor(tower
+                .provider) + '; emissiveIntensity: 0.4;');
+            entity.appendChild(sphere);
+
+            // Ring indicator
+            const ring = document.createElement('a-ring');
+            ring.setAttribute('radius-inner', '2.2');
+            ring.setAttribute('radius-outer', '2.6');
+            ring.setAttribute('color', getProviderColor(tower.provider));
+            ring.setAttribute('position', '0 0.1 0');
+            ring.setAttribute('rotation', '-90 0 0');
+            ring.setAttribute('material', 'shader: standard; emissive: ' + getProviderColor(tower.provider) +
+                '; emissiveIntensity: 0.5; opacity: 0.7; transparent: true;');
+            ring.setAttribute('side', 'double');
+            entity.appendChild(ring);
+
+            // Floating text
+            const text = document.createElement('a-text');
+            const initialDist = (userLat !== null && userLng !== null) ?
+                calculateDistance(userLat, userLng, tower.lat, tower.lng) : null;
+            text.setAttribute('value', formatTowerText(tower, initialDist));
+            text.setAttribute('look-at', '[gps-camera]');
+            text.setAttribute('scale', '20 20 20');
+            text.setAttribute('align', 'center');
+            text.setAttribute('anchor', 'center');
+            text.setAttribute('position', '0 5 0');
+            text.setAttribute('color', '#ffffff');
+            text.setAttribute('font', 'roboto');
+            text.setAttribute('outline-color', '#000000');
+            text.setAttribute('outline-width', '3');
+            text.setAttribute('side', 'double');
+            entity.appendChild(text);
+
+            // Append to scene
+            if (arScene) {
+                arScene.appendChild(entity);
+            }
+
+            return { entity, textEl: text, tower };
+        }
+
+        function renderAllTowers() {
+            clearAllTowerEntities();
+            mergeAllTowers();
+            allTowers.forEach(tower => {
+                const refs = createTowerEntity(tower);
+                towerEntityRefs[tower.id] = refs;
+            });
+            updateHUDTowerCount();
+            updateSavedTowersUI();
+        }
+
+        function addTowerToScene(tower) {
+            const refs = createTowerEntity(tower);
+            towerEntityRefs[tower.id] = refs;
+            updateHUDTowerCount();
+            updateSavedTowersUI();
+        }
+
+        function removeTowerFromScene(towerId) {
+            const ref = towerEntityRefs[towerId];
+            if (ref) {
+                try {
+                    if (ref.entity && ref.entity.parentNode) {
+                        ref.entity.parentNode.removeChild(ref.entity);
+                    }
+                } catch (e) {
+                    console.warn('Error removing entity:', e);
+                }
+                delete towerEntityRefs[towerId];
+            }
+        }
+
+        function updateAllDistances() {
+            if (userLat === null || userLng === null) return;
+            Object.values(towerEntityRefs).forEach(ref => {
+                const dist = calculateDistance(userLat, userLng, ref.tower.lat, ref.tower.lng);
+                try {
+                    ref.textEl.setAttribute('value', formatTowerText(ref.tower, dist));
+                } catch (e) {
+                    // Silently skip if element was removed
+                }
+            });
+        }
+
+        function updateHUDTowerCount() {
+            if (hudTowerCount) {
+                hudTowerCount.textContent = allTowers.length;
+            }
+        }
+
+        // ==================== GPS TRACKING ====================
+        function setupGPSTracking() {
+            if (!navigator.geolocation) {
+                console.warn('Geolocation not supported');
+                updateGPSDisplay(null, null, 'Unsupported');
+                return;
+            }
+            gpsWatchId = navigator.geolocation.watchPosition(
+                (position) => {
+                    userLat = position.coords.latitude;
+                    userLng = position.coords.longitude;
+                    userAccuracy = position.coords.accuracy;
+                    updateGPSDisplay(userLat, userLng, userAccuracy);
+                    updateAllDistances();
+                },
+                (error) => {
+                    console.warn('GPS error:', error.message);
+                    updateGPSDisplay(null, null, 'Error: ' + error.message);
+                }, {
+                    enableHighAccuracy: true,
+                    maximumAge: 3000,
+                    timeout: 15000
+                }
+            );
+        }
+
+        function updateGPSDisplay(lat, lng, accuracy) {
+            if (hudLat && hudLng && hudAccuracy) {
+                if (lat !== null && lng !== null) {
+                    hudLat.textContent = lat.toFixed(6) + '°';
+                    hudLng.textContent = lng.toFixed(6) + '°';
+                } else {
+                    hudLat.textContent = '--';
+                    hudLng.textContent = '--';
+                }
+                if (typeof accuracy === 'number') {
+                    hudAccuracy.textContent = '±' + Math.round(accuracy) + 'm';
+                    hudAccuracy.className = 'font-mono text-green-300 text-[10px]';
+                } else if (typeof accuracy === 'string') {
+                    hudAccuracy.textContent = accuracy;
+                    hudAccuracy.className = 'font-mono text-red-300 text-[10px]';
+                } else {
+                    hudAccuracy.textContent = '--';
+                    hudAccuracy.className = 'font-mono text-amber-300 text-[10px]';
+                }
+            }
+        }
+
+        // ==================== BOTTOM SHEET LOGIC ====================
+        function showSheet() {
+            isSheetVisible = true;
+            bottomSheet.classList.add('visible');
+            sheetBackdrop.classList.add('visible');
+            fabIcon.textContent = '✕';
+            toggleFab.classList.remove('animate-[subtle-pulse_2.5s_ease-in-out_infinite]');
+            toggleFab.style.animation = 'none';
+            toggleFab.style.backgroundColor = '#ef4444';
+            toggleFab.style.borderColor = 'rgba(252,165,165,0.5)';
+        }
+
+        function hideSheet() {
+            isSheetVisible = false;
+            bottomSheet.classList.remove('visible');
+            sheetBackdrop.classList.remove('visible');
+            fabIcon.textContent = '＋';
+            toggleFab.style.animation = 'subtle-pulse 2.5s ease-in-out infinite';
+            toggleFab.style.backgroundColor = '#4f46e5';
+            toggleFab.style.borderColor = 'rgba(165,180,252,0.4)';
+        }
+
+        function toggleSheet() {
+            if (isSheetVisible) {
+                hideSheet();
+            } else {
+                showSheet();
+            }
+        }
+
+        function resetForm() {
+            towerNameInput.value = '';
+            towerProviderInput.value = 'Dialog';
+            towerLatInput.value = '';
+            towerLngInput.value = '';
+        }
+
+        // ==================== TOAST ====================
+        function showToast(message, bgColor = '#10b981') {
+            if (toastTimer) clearTimeout(toastTimer);
+            toastEl.textContent = message;
+            toastEl.style.backgroundColor = bgColor;
+            toastEl.classList.remove('toast-show');
+            void toastEl.offsetWidth; // Force reflow
+            toastEl.classList.add('toast-show');
+            toastTimer = setTimeout(() => {
+                toastEl.classList.remove('toast-show');
+                toastEl.style.opacity = '0';
+                toastTimer = null;
+            }, 2200);
+            toastEl.style.opacity = '1';
+        }
+
+        // ==================== TOWER ADDITION HANDLER ====================
+        function handleAddTower() {
+            const name = towerNameInput.value.trim();
+            const provider = towerProviderInput.value;
+            const latStr = towerLatInput.value.trim();
+            const lngStr = towerLngInput.value.trim();
+
+            // Validate
+            if (!name) {
+                showToast('⚠️ Please enter a tower name', '#f59e0b');
+                towerNameInput.focus();
+                return;
+            }
+            if (!latStr || !lngStr) {
+                showToast('⚠️ Please enter latitude & longitude', '#f59e0b');
+                return;
+            }
+            const lat = parseFloat(latStr);
+            const lng = parseFloat(lngStr);
+            if (isNaN(lat) || isNaN(lng)) {
+                showToast('⚠️ Invalid coordinate numbers', '#f59e0b');
+                return;
+            }
+            if (lat < -90 || lat > 90) {
+                showToast('⚠️ Latitude must be between -90 and 90', '#f59e0b');
+                return;
+            }
+            if (lng < -180 || lng > 180) {
+                showToast('⚠️ Longitude must be between -180 and 180', '#f59e0b');
+                return;
+            }
+
+            // Create tower object
+            const newTower = {
+                id: 'custom-' + Date.now() + '-' + Math.floor(Math.random() * 10000),
+                name: name,
+                provider: provider,
+                lat: lat,
+                lng: lng
+            };
+
+            // Add to custom towers
+            customTowers.push(newTower);
+            saveCustomTowers();
+
+            // Add to allTowers
+            allTowers.push(newTower);
+
+            // Render in AR scene
+            addTowerToScene(newTower);
+
+            // Show success
+            showToast('✅ Tower "' + name + '" added!', '#10b981');
+
+            // Reset form
+            resetForm();
+
+            // Optionally hide sheet
+            // hideSheet();
+        }
+
+        function handleUseCurrentLocation() {
+            if (userLat !== null && userLng !== null) {
+                towerLatInput.value = userLat.toFixed(7);
+                towerLngInput.value = userLng.toFixed(7);
+                showToast('📍 Current location filled!', '#6366f1');
+            } else {
+                showToast('⚠️ GPS not available yet. Please wait...', '#f59e0b');
+            }
+        }
+
+        function handleClearAllCustom() {
+            if (customTowers.length === 0) {
+                showToast('ℹ️ No custom towers to clear', '#6b7280');
+                return;
+            }
+            if (confirm('Delete all ' + customTowers.length +
+                    ' custom tower(s)? This cannot be undone. Default towers will remain.')) {
+                // Remove custom tower entities from scene
+                const customIds = customTowers.map(t => t.id);
+                customIds.forEach(id => removeTowerFromScene(id));
+                // Clear custom towers
+                customTowers = [];
+                saveCustomTowers();
+                // Re-merge
+                mergeAllTowers();
+                updateHUDTowerCount();
+                updateSavedTowersUI();
+                showToast('🗑 All custom towers cleared', '#ef4444');
+            }
+        }
+
+        function updateSavedTowersUI() {
+            if (customTowerCountEl) {
+                customTowerCountEl.textContent = customTowers.length + ' custom';
+            }
+            if (savedTowersList) {
+                if (customTowers.length === 0) {
+                    savedTowersList.innerHTML =
+                        '<p class="text-xs text-slate-500 italic">No custom towers saved yet.</p>';
+                } else {
+                    savedTowersList.innerHTML = customTowers.map((t, i) => {
+                        return '<div class="flex items-center justify-between bg-slate-800/60 rounded-lg px-3 py-2 text-xs text-slate-300">' +
+                            '<div class="flex-1 min-w-0">' +
+                            '<span class="font-semibold text-white truncate block">' +
+                            escapeHTML(t.name) + '</span>' +
+                            '<span class="text-[10px] text-slate-400">' +
+                            escapeHTML(t.provider) + ' | ' + t.lat.toFixed(4) + ', ' + t
+                            .lng.toFixed(4) + '</span>' +
+                            '</div>' +
+                            '<button class="delete-single-tower ml-2 text-red-400 hover:text-red-300 text-lg leading-none cursor-pointer flex-shrink-0" data-index="' +
+                            i + '" title="Delete this tower">&times;</button>' +
+                            '</div>';
+                    }).join('');
+                    // Attach event listeners to delete buttons
+                    savedTowersList.querySelectorAll('.delete-single-tower').forEach(btn => {
+                        btn.addEventListener('click', function(e) {
+                            e.stopPropagation();
+                            const idx = parseInt(this.getAttribute('data-index'));
+                            if (!isNaN(idx) && idx >= 0 && idx < customTowers.length) {
+                                const tower = customTowers[idx];
+                                removeTowerFromScene(tower.id);
+                                customTowers.splice(idx, 1);
+                                saveCustomTowers();
+                                mergeAllTowers();
+                                updateHUDTowerCount();
+                                updateSavedTowersUI();
+                                showToast('🗑 Tower removed', '#ef4444');
+                            }
+                        });
+                    });
+                }
+            }
+        }
+
+        function escapeHTML(str) {
+            const div = document.createElement('div');
+            div.appendChild(document.createTextNode(str));
+            return div.innerHTML;
+        }
+
+        // ==================== EVENT LISTENERS ====================
+        toggleFab.addEventListener('click', toggleSheet);
+        closeSheetBtn.addEventListener('click', hideSheet);
+        sheetBackdrop.addEventListener('click', hideSheet);
+        addTowerBtn.addEventListener('click', handleAddTower);
+        useCurrentLocationBtn.addEventListener('click', handleUseCurrentLocation);
+        clearAllCustomBtn.addEventListener('click', handleClearAllCustom);
+
+        // Keyboard shortcut: Escape to close sheet
+        document.addEventListener('keydown', function(e) {
+            if (e.key === 'Escape' && isSheetVisible) {
+                hideSheet();
+            }
+        });
+
+        // Prevent sheet content clicks from bubbling to backdrop
+        bottomSheet.addEventListener('click', function(e) {
+            e.stopPropagation();
+        });
+
+        // ==================== SCENE READY HANDLER ====================
+        function onSceneReady() {
+            sceneReady = true;
+            loadingOverlay.style.opacity = '0';
+            setTimeout(() => {
+                if (loadingOverlay.parentNode) {
+                    loadingOverlay.style.display = 'none';
+                }
+            }, 600);
+            // Render towers after a short delay to allow GPS camera initialization
+            setTimeout(() => {
+                renderAllTowers();
+            }, 1200);
+        }
+
+        // Listen for scene loaded
+        if (arScene) {
+            arScene.addEventListener('loaded', function() {
+                console.log('A-Frame scene loaded');
+                onSceneReady();
+            });
+            // Fallback: if scene is already loaded (e.g., script order)
+            if (arScene.hasLoaded) {
+                console.log('A-Frame scene already loaded');
+                onSceneReady();
+            }
+        }
+
+        // Additional fallback: hide loading overlay after timeout
+        setTimeout(() => {
+            if (!sceneReady) {
+                console.warn('Scene load timeout - hiding overlay');
+                loadingOverlay.style.opacity = '0';
+                setTimeout(() => {
+                    if (loadingOverlay.parentNode && loadingOverlay.style.opacity === '0') {
+                        loadingOverlay.style.display = 'none';
+                    }
+                }, 600);
+                if (!sceneReady) {
+                    sceneReady = true;
+                    setTimeout(() => renderAllTowers(), 800);
+                }
+            }
+        }, 10000);
+
+        // ==================== HTTPS CHECK ====================
+        function checkSecureContext() {
+            if (!window.isSecureContext) {
+                httpsWarning.classList.remove('hidden');
+                httpsStatusText.textContent = '❌ Not Secure (HTTP detected)';
+                httpsStatusText.className = 'font-mono text-red-400';
+                // Hide AR scene
+                const container = document.getElementById('ar-scene-container');
+                if (container) container.style.display = 'none';
+                // Hide loading overlay
+                loadingOverlay.style.display = 'none';
+                return false;
+            } else {
+                httpsWarning.classList.add('hidden');
+                httpsStatusText.textContent = '✅ Secure (HTTPS)';
+                httpsStatusText.className = 'font-mono text-green-400';
+                return true;
+            }
+        }
+
+        // ==================== INITIALIZATION ====================
+        function init() {
+            const isSecure = checkSecureContext();
+            if (!isSecure) {
+                // Still allow the rest to initialize but AR won't work
+                console.error('App requires HTTPS for AR functionality');
+                return;
+            }
+
+            // Load custom towers
+            loadCustomTowers();
+            mergeAllTowers();
+            updateHUDTowerCount();
+            updateSavedTowersUI();
+
+            // Setup GPS
+            setupGPSTracking();
+
+            // If scene is already marked as loaded by the time this runs
+            if (arScene && arScene.hasLoaded && !sceneReady) {
+                onSceneReady();
+            }
+        }
+
+        // Run init after a microtask to ensure DOM is fully parsed
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', init);
+        } else {
+            init();
+        }
+
+        // ==================== SERVICE WORKER REGISTRATION HINT ====================
+        // For full PWA capabilities, register a service worker.
+        // This is optional and won't break the app if omitted.
+        if ('serviceWorker' in navigator && window.isSecureContext) {
+            // Service worker registration could be added here for offline caching
+            // navigator.serviceWorker.register('/sw.js').catch(() => {});
+        }
+
+        // ==================== EXPORT FOR DEBUG ====================
+        if (typeof window !== 'undefined') {
+            window.__arTowerApp = {
+                getState: () => ({
+                    customTowers,
+                    allTowers,
+                    userLat,
+                    userLng,
+                    userAccuracy,
+                    sceneReady,
+                    isSheetVisible,
+                    towerEntityRefs: Object.keys(towerEntityRefs).length
+                }),
+                addTower: (tower) => {
+                    customTowers.push(tower);
+                    saveCustomTowers();
+                    allTowers.push(tower);
+                    addTowerToScene(tower);
+                },
+                clearCustom: handleClearAllCustom,
+                refreshAR: renderAllTowers,
+                showSheet,
+                hideSheet,
+                toggleSheet,
+            };
+        }
+
+        console.log('%c📡 Cell Tower AR Viewer Ready %c| %cHTTPS: ' +
+            (window.isSecureContext ? '✅' : '❌') +
+            ' %c| Default Towers: ' + defaultTowers.length +
+            ' %c| Custom Towers: ' + customTowers.length,
+            'color: #818cf8; font-weight: bold;',
+            '',
+            window.isSecureContext ? 'color: #4ade80;' : 'color: #f87171;',
+            '',
+            'color: #fbbf24;');
+    })();
+</script>
+</body>
+</html>
